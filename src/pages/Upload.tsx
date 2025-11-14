@@ -19,7 +19,7 @@ export default function Upload() {
       <div className="mb-8">
         <h1 className="mb-2 text-3xl font-bold text-foreground">Upload Resumes</h1>
         <p className="text-muted-foreground">
-          Upload PDF or DOCX resumes to automatically parse and index candidates.
+          Upload PDF resumes to automatically parse and index candidates.
         </p>
       </div>
 
@@ -41,10 +41,10 @@ export default function Upload() {
                 <CheckCircle2 className="mt-0.5 h-4 w-4 text-success flex-shrink-0" />
                 <span>PDF documents (.pdf)</span>
               </li>
-              <li className="flex items-start gap-2">
+              {/* <li className="flex items-start gap-2">
                 <CheckCircle2 className="mt-0.5 h-4 w-4 text-success flex-shrink-0" />
                 <span>Microsoft Word (.docx)</span>
-              </li>
+              </li> */}
               <li className="flex items-start gap-2">
                 <CheckCircle2 className="mt-0.5 h-4 w-4 text-success flex-shrink-0" />
                 <span>Maximum file size: 10MB</span>

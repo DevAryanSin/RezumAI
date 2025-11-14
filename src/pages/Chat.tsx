@@ -4,8 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Send, Bot, User, Sparkles, ExternalLink } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Send, Bot, User, Sparkles, ExternalLink, ArrowLeft } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
 import { mockCandidates } from "@/lib/mockData";
 
 interface Message {
@@ -21,6 +21,7 @@ interface Message {
 }
 
 export default function Chat() {
+  const navigate = useNavigate();
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "1",
@@ -114,16 +115,22 @@ export default function Chat() {
       <div className="flex flex-1 flex-col">
         {/* Header */}
         <div className="border-b border-border bg-card p-6">
-          <div className="flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-primary to-secondary">
-              <Bot className="h-6 w-6 text-white" />
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-primary to-secondary">
+                <Bot className="h-6 w-6 text-white" />
+              </div>
+              <div>
+                <h1 className="text-xl font-bold text-foreground">AI Recruitment Assistant</h1>
+                <p className="text-sm text-muted-foreground">
+                  Powered by RAG & Natural Language Search
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-xl font-bold text-foreground">AI Recruitment Assistant</h1>
-              <p className="text-sm text-muted-foreground">
-                Powered by RAG & Natural Language Search
-              </p>
-            </div>
+            <Button variant="ghost" onClick={() => navigate(-1)} className="gap-2 text-sm">
+              <ArrowLeft className="h-4 w-4" />
+              Back
+            </Button>
           </div>
         </div>
 

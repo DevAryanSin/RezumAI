@@ -12,6 +12,7 @@ Features:
 - GET /upload_resume serves a small test HTML form (prevents 405 when you open the URL in a browser).
 - /favicon.ico returns 204 (silences favicon 404s).
 """
+from firestore import router as firestore_router
 from pathlib import Path
 import os
 import logging
@@ -89,6 +90,10 @@ app.add_middleware(
 )
 
 
+
+app.include_router(firestore_router, prefix="/api")
+
+
 def _secure_filename(name: str) -> str:
     # minimal sanitization
     return name.replace("..", "").replace("/", "_")
@@ -116,17 +121,17 @@ def upload_form():
     html = """
     <!doctype html>
     <html>
-      <head><meta charset="utf-8"><title>Upload Resume (test form)</title></head>
-      <body>
+    <head><meta charset="utf-8"><title>Upload Resume (test form)</title></head>
+    <body>
         <h3>Upload Resume (test)</h3>
         <form action="/upload_resume" enctype="multipart/form-data" method="post">
-          <label>recruiter_uuid: <input name="recruiter_uuid" value="rec-uuid-test"></label><br/>
-          <label>batch_name: <input name="batch_name" value="batch_test"></label><br/>
-          <label>original_filename (optional): <input name="original_filename" value=""></label><br/>
-          <input name="file" type="file" /><br/><br/>
-          <input type="submit" value="Upload" />
+        <label>recruiter_uuid: <input name="recruiter_uuid" value="rec-uuid-test"></label><br/>
+        <label>batch_name: <input name="batch_name" value="batch_test"></label><br/>
+        <label>original_filename (optional): <input name="original_filename" value=""></label><br/>
+        <input name="file" type="file" /><br/><br/>
+        <input type="submit" value="Upload" />
         </form>
-      </body>
+    </body>
     </html>
     """
     return HTMLResponse(content=html)
@@ -142,7 +147,7 @@ async def upload_resume(
     """
     Upload resume file to GCS and optionally write Firestore metadata.
     Produces a session_id and stores object at:
-      <recruiter_uuid>/<batch_name>/<session_id><ext>
+    <recruiter_uuid>/<batch_name>/<session_id><ext>
     """
     # Basic validation
     if not recruiter_uuid:

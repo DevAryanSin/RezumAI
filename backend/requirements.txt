@@ -1,8 +1,5 @@
-fastapi==0.95.2
-uvicorn[standard]==0.22.0
-python-dotenv==1.0.0
-# Google Cloud Vertex AI SDK (optional; only required if you enable Vertex calls)
-google-cloud-aiplatform==2.27.0
-# (Optional) Agora server/token SDK - add the official package when implementing tokens
-# Example: agora-token-builder or the official Agora Python SDK if available
-# agora-token-builder==1.0.0
+fastapi
+uvicorn[standard]
+python-dotenv
+
+pypdf

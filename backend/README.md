@@ -26,3 +26,10 @@ Notes:
 - The Vertex AI call in `main.py` is a conservative, best-effort example. Adjust the request/response handling to match the exact model you use and the SDK version.
 - For Agora tokens, replace the placeholder `generate_agora_token` with the official token builder from Agora.
 - When running in Docker, pass environment variables via an env-file or secrets mechanism.
+ - When running in Docker, pass environment variables via an env-file or secrets mechanism.
+
+Embedding stub
+----------------
+This project includes a small stub used to simulate embeddings work: `create_embeddings_for_pdf(file_path, batch_id)` in `main.py`.
+Replace this function with your real embedding pipeline (e.g. Vertex Embeddings, OpenAI embeddings, or enqueue a job in a task queue).
+The upload endpoint saves files to `./uploads/{batch_name}/original/` by default and writes a `metadata.json` in the batch folder.

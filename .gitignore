@@ -1,0 +1,35 @@
+.env
+*.env
+
+# Uploads (resume files, generated embeddings, metadata)
+uploads/
+
+# Virtualenvs
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+
+# macOS
+.DS_Store
+
+# Node / Next
+node_modules/
+.next/
+out/
+
+# Logs
+*.log

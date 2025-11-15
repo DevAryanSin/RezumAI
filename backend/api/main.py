@@ -1,86 +1,122 @@
 # main.py
 """
-RezumAI - Resume upload API (robust)
+RezumAI - Main API
 
-Features:
-- Loads .env (if present).
-- Works when google-cloud libs / env are missing (upload endpoint will return 500 with clear message).
-- POST /upload_resume accepts multipart form (recruiter_uuid, batch_name, optional original_filename, file).
-- Generates session_id for each upload and stores object at:
-    <recruiter_uuid>/<batch_name>/<session_id><ext>
-- Optionally writes Firestore metadata if credentials + Firestore available.
-- GET /upload_resume serves a small test HTML form (prevents 405 when you open the URL in a browser).
-- /favicon.ico returns 204 (silences favicon 404s).
+Key points:
+- Loads .env first (so modules that read env see correct values).
+- Robust GCS / Firestore initialization (resolves absolute paths).
+- Lifespan event initializes vertex_search (RAG clients).
+- Exposes /api/chat, upload endpoints, and simple health checks.
 """
-from firestore import router as firestore_router
 from pathlib import Path
 import os
 import logging
 import uuid
-from typing import Optional
+from fastapi import status
+from typing import Optional, List
+from contextlib import asynccontextmanager
 
-# optional dotenv
+# -------------------------
+# Load environment (FIRST)
+# -------------------------
 try:
     from dotenv import load_dotenv
 
     env_path = Path(__file__).parent / ".env"
     if env_path.exists():
+        print(f"Loading environment from: {env_path.resolve()}")
         load_dotenv(env_path)
-except Exception:
-    pass
+    else:
+        print(".env file not found, relying on system environment.")
+except Exception as e:
+    print(f"Error loading .env file: {e}")
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+# Now imports that depend on env values
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-# Try to import google cloud storage and firestore; set to None if unavailable
+# Import router that depends on env
+from firestore import router as firestore_router  # must come after env load
+
+# Import vertex_search (RAG / Matching Engine) AFTER env
+import vertex_search
+
+# Search integration: returns candidate dicts / formatting helpers
+from chatbot_search_integration import search_candidates, format_candidate_for_chat
+
+# Try to import google cloud storage (for upload endpoint)
 try:
-    from google.cloud import storage  # type: ignore
-    from google.cloud import firestore  # type: ignore
-    from google.oauth2 import service_account  # type: ignore
+    from google.cloud import storage
+    from google.oauth2 import service_account
 except Exception:
-    storage = None  # type: ignore
-    firestore = None  # type: ignore
-    service_account = None  # type: ignore
+    storage = None
+    service_account = None
 
-# --- Configuration ---
+# -------------------------
+# Configuration
+# -------------------------
+PROJECT_ID = os.getenv("PROJECT_ID")
 BUCKET_NAME = os.getenv("BUCKET_NAME")
 GOOGLE_CREDS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 ALLOWED_EXTENSIONS = {".pdf", ".docx"}
-MAX_SIZE_BYTES = int(os.getenv("MAX_SIZE_BYTES", 10 * 1024 * 1024))  # default 10MB
+MAX_SIZE_BYTES = int(os.getenv("MAX_SIZE_BYTES", 10 * 1024 * 1024))  # 10 MB default
 
 logger = logging.getLogger("uvicorn.error")
 
-# --- Initialize GCP clients if possible ---
+# -------------------------
+# Initialize GCS / Firestore clients (robust)
+# -------------------------
 storage_client = None
 bucket = None
-firestore_client = None
-if storage is None:
-    logger.warning("google-cloud-storage not available; uploads disabled until configured.")
-else:
-    try:
-        if GOOGLE_CREDS and service_account:
-            creds = service_account.Credentials.from_service_account_file(GOOGLE_CREDS)
-            storage_client = storage.Client(credentials=creds)
-            if firestore is not None:
-                firestore_client = firestore.Client(credentials=creds)
+
+def _resolve_creds_path(creds_path: Optional[str]) -> Optional[str]:
+    if not creds_path:
+        return None
+    return os.path.abspath(creds_path)
+
+try:
+    if storage is None:
+        logger.warning("google-cloud-storage not installed; upload endpoints will be disabled.")
+    else:
+        creds_path = _resolve_creds_path(GOOGLE_CREDS)
+        if creds_path:
+            if not os.path.exists(creds_path):
+                logger.error("GOOGLE_APPLICATION_CREDENTIALS file not found at: %s", creds_path)
+                raise FileNotFoundError(f"GOOGLE_APPLICATION_CREDENTIALS not found: {creds_path}")
+            creds = service_account.Credentials.from_service_account_file(creds_path) if service_account else None
+            storage_client = storage.Client(credentials=creds, project=PROJECT_ID) if creds else storage.Client(project=PROJECT_ID)
         else:
-            storage_client = storage.Client()
-            if firestore is not None:
-                firestore_client = firestore.Client()
+            # Use ADC / default credentials
+            storage_client = storage.Client(project=PROJECT_ID)
+
         if BUCKET_NAME:
             bucket = storage_client.bucket(BUCKET_NAME)
         else:
-            logger.warning("BUCKET_NAME not set. Upload endpoint will return an error until configured.")
+            logger.warning("BUCKET_NAME not set. /upload_resume will fail until configured.")
+except Exception as e:
+    logger.exception("Failed to initialize GCS client: %s", e)
+    storage_client = None
+    bucket = None
+
+# -------------------------
+# FastAPI Lifespan: init RAG clients
+# -------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("FastAPI app starting up...")
+    try:
+        vertex_search.initialize_globals()
+        logger.info("Vertex/RAG clients initialized.")
     except Exception as e:
-        logger.exception("Failed to initialize GCS/Firestore clients: %s", e)
-        storage_client = None
-        bucket = None
-        firestore_client = None
+        logger.critical("FATAL: RAG client initialization failed: %s. API will have limited functionality.", e)
+    yield
+    logger.info("FastAPI app shutting down.")
 
-app = FastAPI(title="RezumAI - Resume Upload API (robust)")
+app = FastAPI(title="RezumAI - RAG API", lifespan=lifespan)
 
-# CORS for development; lock down in production
+# CORS (dev-friendly)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -89,15 +125,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-
+# Mount the Firestore router (read-only API)
 app.include_router(firestore_router, prefix="/api")
 
+# -------------------------
+# Pydantic models for chat
+# -------------------------
+class ChatRequest(BaseModel):
+    query: str
+    recruiter_uuid: str
+    batch_tag: str
 
+class Citation(BaseModel):
+    candidateId: str
+    candidateName: str
+    snippet: str
+
+class ChatResponse(BaseModel):
+    content: str
+    citations: List[Citation]
+
+# -------------------------
+# Utility helpers
+# -------------------------
 def _secure_filename(name: str) -> str:
-    # minimal sanitization
     return name.replace("..", "").replace("/", "_")
-
 
 def _validate_extension_and_size(filename: str, size: int) -> Optional[str]:
     _, dot, ext = filename.rpartition(".")
@@ -108,16 +160,168 @@ def _validate_extension_and_size(filename: str, size: int) -> Optional[str]:
         return f"File too large. Max size is {MAX_SIZE_BYTES // (1024 * 1024)} MB."
     return None
 
-
+# -------------------------
+# Simple endpoints
+# -------------------------
 @app.get("/favicon.ico")
 def favicon():
-    # Return no content to prevent 404 favicon noise from browsers
     return Response(status_code=204)
 
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
 
+@app.get("/api/health/firestore")
+def health_firestore():
+    """
+    Quick health check for Firestore connectivity (calls router's init).
+    Useful for debugging environment/credentials.
+    """
+    try:
+        # Call into firestore module's initializer to ensure client is up
+        from firestore import _init_firestore_client  # local import to avoid circular issues
+        db = _init_firestore_client()
+        # cheap call
+        collections = list(db.collections())
+        return {"ok": True, "collections_count": len(collections)}
+    except Exception as e:
+        logger.exception("Firestore health check failed: %s", e)
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+# -------------------------
+# Chat endpoint (RAG)
+# -------------------------
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat_handler(request: ChatRequest):
+    """
+    Chat flow:
+      1. Use vertex_search.find_neighbor_ids to get candidate datapoint ids (namespace-scoped by batch_tag/recruiter_uuid).
+      2. Call search_candidates(...) to fetch/format candidate documents (search integration).
+      3. Build context for the generative model from top candidates and call Gemini.
+      4. Return generated answer with citations.
+    """
+    try:
+        # 1) Find neighbors (vector search)
+        try:
+            neighbor_ids = vertex_search.find_neighbor_ids(
+                query=request.query,
+                batch_tag=request.batch_tag,
+                top_k=15
+            )
+        except Exception as e:
+            logger.exception("Vector search error: %s", e)
+            neighbor_ids = []
+
+        if not neighbor_ids:
+            logger.info("No neighbors returned by vector search for batch=%s recruiter=%s", request.batch_tag, request.recruiter_uuid)
+            return ChatResponse(content="I couldn't find any candidates matching your criteria in that batch.", citations=[])
+
+        # 2) Use search integration to fetch candidate records
+        # The search_candidates integration is expected to accept neighbor_ids or fallback to query-based search.
+        # We'll try neighbor_ids first (most precise). If that fails, fallback to query-based call.
+        candidates = []
+        try:
+            # try the neighbor_ids-first signature (common)
+            candidates = search_candidates(neighbor_ids=neighbor_ids, recruiter_uuid=request.recruiter_uuid, batch_tag=request.batch_tag, top_k=10)
+        except TypeError:
+            # signature does not accept neighbor_ids -> fallback to query-based call
+            try:
+                candidates = search_candidates(query=request.query, recruiter_uuid=request.recruiter_uuid, batch_tag=request.batch_tag, top_k=10)
+            except Exception as e:
+                logger.exception("search_candidates fallback failed: %s", e)
+                candidates = []
+        except Exception as e:
+            logger.exception("search_candidates failed: %s", e)
+            candidates = []
+
+        if not candidates:
+            logger.info("No candidate documents retrieved after search integration.")
+            return ChatResponse(content="I found some potential matches, but none were relevant after review.", citations=[])
+
+        # 3) Prepare context and citations. Use format_candidate_for_chat if available to normalize display.
+        context_parts = []
+        citations = []
+        top_candidates = candidates[:10]  # limit to top-10 for prompt size
+
+        for i, c in enumerate(top_candidates):
+            try:
+                formatted = format_candidate_for_chat(c) if callable(format_candidate_for_chat) else c
+            except Exception:
+                # If formatting fails, fall back to raw candidate dict
+                logger.exception("format_candidate_for_chat failed for candidate: %s", c.get("candidate_id") if isinstance(c, dict) else None)
+                formatted = c
+
+            # Build a compact textual snippet for the context (fields tolerant)
+            name = formatted.get("name") or formatted.get("candidate_name") or formatted.get("candidateName") or formatted.get("candidate_id") or "Unknown"
+            summary = formatted.get("summary") or formatted.get("profile_summary") or formatted.get("summary_text") or ""
+
+            context_parts.append(
+                f"--- Candidate {i+1} ---\nName: {name}\nSummary: {summary}\n"
+            )
+
+            # Ensure we map candidate id -> citation candidateId
+            cand_id = formatted.get("candidate_id") or formatted.get("id") or formatted.get("candidateId") or None
+            citations.append(Citation(
+                candidateId=str(cand_id) if cand_id else f"cand_{i}",
+                candidateName=name,
+                snippet=(summary[:150] + "...") if summary else ""
+            ))
+
+        context = "\n\n".join(context_parts)
+
+        # 4) Build prompt
+        prompt = f"""You are an expert AI recruitment assistant. Your task is to answer the user's question based *only* on the candidate summaries provided in the 'Context'.
+
+CONTEXT:
+{context}
+
+USER'S QUESTION:
+{request.query}
+
+Based on the context, provide a helpful and concise answer. If the context does not contain the answer, say so.
+Do not mention "based on the context" in your final answer.
+"""
+
+        # 5) Generate with Gemini (support async and sync call shapes)
+        if not getattr(vertex_search, "gen_model", None):
+            logger.error("Generative model not initialized in vertex_search.")
+            raise HTTPException(status_code=500, detail="Generative model not initialized")
+
+        # Try async generator if available
+        try:
+            # many newer SDKs expose generate_content_async / generate_async / generate_content
+            if hasattr(vertex_search.gen_model, "generate_content_async"):
+                gemini_response = await vertex_search.gen_model.generate_content_async(prompt)
+                text = getattr(gemini_response, "text", str(gemini_response)).strip()
+            elif hasattr(vertex_search.gen_model, "generate_async"):
+                gemini_response = await vertex_search.gen_model.generate_async(prompt)
+                text = getattr(gemini_response, "text", str(gemini_response)).strip()
+            else:
+                # fallback to synchronous call (SDK may provide generate or generate_content)
+                try:
+                    gemini_response = vertex_search.gen_model.generate(prompt)
+                    text = getattr(gemini_response, "text", str(gemini_response)).strip()
+                except Exception:
+                    # last-resort REST-style call wrapper (if the object expects generate_content)
+                    gemini_response = vertex_search.gen_model.generate_content(prompt)
+                    text = getattr(gemini_response, "text", str(gemini_response)).strip()
+        except Exception as e:
+            logger.exception("Generative model call failed: %s", e)
+            raise HTTPException(status_code=500, detail=f"Generative model invocation failed: {e}")
+
+        return ChatResponse(content=text, citations=citations)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error in /api/chat endpoint: %s", e)
+        raise HTTPException(status_code=500, detail=f"An internal error occurred: {e}")
+
+# -------------------------
+# Upload endpoints (minimal)
+# -------------------------
 @app.get("/upload_resume", response_class=HTMLResponse)
 def upload_form():
-    # Simple debugging form so opening the endpoint in a browser doesn't produce 405
     html = """
     <!doctype html>
     <html>
@@ -136,7 +340,6 @@ def upload_form():
     """
     return HTMLResponse(content=html)
 
-
 @app.post("/upload_resume")
 async def upload_resume(
     recruiter_uuid: str = Form(...),
@@ -144,11 +347,6 @@ async def upload_resume(
     original_filename: Optional[str] = Form(None),
     file: UploadFile = File(...),
 ):
-    """
-    Upload resume file to GCS and optionally write Firestore metadata.
-    Produces a session_id and stores object at:
-    <recruiter_uuid>/<batch_name>/<session_id><ext>
-    """
     # Basic validation
     if not recruiter_uuid:
         raise HTTPException(status_code=400, detail="recruiter_uuid is required")
@@ -161,24 +359,17 @@ async def upload_resume(
             status_code=500,
             detail=(
                 "Storage not configured. Ensure google-cloud-storage is installed, BUCKET_NAME is set, "
-                "and GOOGLE_APPLICATION_CREDENTIALS points to a valid service-account JSON if required.\n"
-                "Example (PowerShell):\n"
-                "$env:BUCKET_NAME='my-bucket'; $env:GOOGLE_APPLICATION_CREDENTIALS='C:\\path\\sa.json'; python -m uvicorn main:app --reload\n"
+                "and GOOGLE_APPLICATION_CREDENTIALS points to a valid service-account JSON if required."
             ),
         )
 
-    # prepare names
     orig_name = original_filename or file.filename or "resume"
     safe_name = _secure_filename(orig_name)
-
-    # determine extension
     _, dot, ext = safe_name.rpartition(".")
     ext = f".{ext.lower()}" if dot else ""
 
-    # attempt to compute size. If not possible, set to 0 and rely on GCS limits.
     size = 0
     try:
-        # Seek to end to get size for file-like objects
         file.file.seek(0, os.SEEK_END)
         size = file.file.tell()
         file.file.seek(0)
@@ -195,16 +386,13 @@ async def upload_resume(
     blob = bucket.blob(gcs_path)
 
     try:
-        # Check duplicates by path (we use session_id in filename so collision is extremely unlikely;
-        # but keep check for safety if you later switch naming)
         if blob.exists():
             raise HTTPException(status_code=409, detail="A file with this name already exists in this batch.")
 
-        # Upload
         file.file.seek(0)
         blob.upload_from_file(file.file, content_type=file.content_type)
 
-        # Attach metadata
+        # Patch metadata (best-effort)
         try:
             blob.metadata = {
                 "recruiter_uuid": recruiter_uuid,
@@ -214,13 +402,12 @@ async def upload_resume(
             }
             blob.patch()
         except Exception:
-            # non-fatal; continue
-            logger.exception("Failed to patch metadata for blob %s", gcs_path)
+            logger.exception("Failed to patch blob metadata for %s", gcs_path)
 
-        # Optionally write a Firestore document if client available.
-        if firestore_client is not None:
-            try:
-                doc_ref = firestore_client.collection("recruiter_uploads").document(session_id)
+        # Write to Firestore using vertex_search.firestore_client if available
+        try:
+            if getattr(vertex_search, "firestore_client", None):
+                doc_ref = vertex_search.firestore_client.collection("recruiter_uploads").document(session_id)
                 doc_ref.set({
                     "recruiter_uuid": recruiter_uuid,
                     "batch_name": batch_name,
@@ -230,11 +417,10 @@ async def upload_resume(
                     "gcs_path": gcs_path,
                     "content_type": file.content_type,
                     "size_bytes": size,
-                    "uploaded_at": firestore.SERVER_TIMESTAMP,
+                    "uploaded_at": vertex_search.firestore.SERVER_TIMESTAMP if getattr(vertex_search, "firestore", None) else None,
                 })
-            except Exception:
-                logger.exception("Failed to write metadata to Firestore for session %s", session_id)
-                # do not fail the upload because of metadata write problem
+        except Exception:
+            logger.exception("Failed to write metadata to Firestore for session %s", session_id)
 
         return JSONResponse(status_code=201, content={
             "session_id": session_id,
@@ -246,14 +432,9 @@ async def upload_resume(
         raise
     except Exception as e:
         logger.exception("Upload failed for %s: %s", gcs_path, e)
-        # Best effort cleanup
+        # Best-effort cleanup
         try:
             bucket.blob(gcs_path).delete()
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
-
-
-@app.get("/healthz")
-def healthz():
-    return {"status": "ok"}

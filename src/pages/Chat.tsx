@@ -4,21 +4,32 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Send, Bot, User, Sparkles, ExternalLink, ArrowLeft } from "lucide-react";
+import {
+  Send,
+  Bot,
+  User,
+  Sparkles,
+  ExternalLink,
+  ArrowLeft,
+} from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
-import { mockCandidates } from "@/lib/mockData";
+
+interface Citation {
+  candidateId: string;
+  candidateName: string;
+  snippet: string;
+}
 
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
-  citations?: {
-    candidateId: string;
-    candidateName: string;
-    snippet: string;
-  }[];
+  citations?: Citation[];
 }
+
+// Define the API endpoint
+const API_URL = "http://localhost:8000"; // Your FastAPI backend URL
 
 export default function Chat() {
   const navigate = useNavigate();
@@ -35,9 +46,48 @@ export default function Chat() {
   const [isLoading, setIsLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Batch/tag dropdown state
+  const [batches, setBatches] = useState<string[]>([]);
+  const [batchesLoading, setBatchesLoading] = useState(false);
+  const [currentBatchTag, setCurrentBatchTag] = useState<string | null>(null);
+
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Fetch available batch tags from backend
+  const fetchBatches = async () => {
+    setBatchesLoading(true);
+    try {
+      const resp = await fetch(`${API_URL}/api/batches`);
+      if (!resp.ok) {
+        console.warn("Failed to fetch batches", resp.status);
+        setBatches([]);
+        return;
+      }
+      const json = await resp.json();
+
+      // Accept either { batches: string[] } or string[] directly
+      const list: string[] = Array.isArray(json) ? json : json.batches || [];
+      setBatches(list);
+
+      // pick the first batch if nothing selected yet
+      if (!currentBatchTag && list.length > 0) {
+        setCurrentBatchTag(list[0]);
+      }
+    } catch (err) {
+      console.error("Error fetching batches:", err);
+      setBatches([]);
+    } finally {
+      setBatchesLoading(false);
+    }
+  };
+
+  // fetch once on mount
+  useEffect(() => {
+    fetchBatches();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
@@ -50,56 +100,55 @@ export default function Chat() {
     };
 
     setMessages((prev) => [...prev, userMessage]);
+    const query = input;
     setInput("");
     setIsLoading(true);
 
-    // Simulate AI response
-    setTimeout(() => {
-      const responses = [
-        {
-          content:
-            "Based on your query, I found 3 excellent candidates with strong Kubernetes and backend experience. Asha Kumar stands out with 99.9% uptime achievement in microservices deployment.",
-          citations: [
-            {
-              candidateId: mockCandidates[0].candidateId,
-              candidateName: mockCandidates[0].name,
-              snippet:
-                "Designed microservices architecture deployed on Kubernetes with 99.9% uptime",
-            },
-          ],
+    try {
+      // --- START: API Integration ---
+      const response = await fetch(`${API_URL}/api/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-        {
-          content:
-            "I recommend focusing on candidates with 5+ years of experience in cloud-native technologies. Priya Patel has excellent DevOps credentials with infrastructure automation expertise.",
-          citations: [
-            {
-              candidateId: mockCandidates[2].candidateId,
-              candidateName: mockCandidates[2].name,
-              snippet:
-                "Automated infrastructure provisioning using Terraform and reduced deployment time by 70%",
-            },
-          ],
-        },
-        {
-          content:
-            "All three candidates match your criteria well. Would you like me to compare their specific skills, or help you draft interview questions tailored to their experience?",
-          citations: [],
-        },
-      ];
+        body: JSON.stringify({
+          query: query,
+          batch_tag: currentBatchTag, // Send the selected batch_tag
+        }),
+      });
 
-      const response = responses[Math.floor(Math.random() * responses.length)];
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || "An error occurred");
+      }
+
+      const data = await response.json();
+      // data format: { content: string, citations: Citation[] }
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: response.content,
+        content: data.content,
         timestamp: new Date(),
-        citations: response.citations.length > 0 ? response.citations : undefined,
+        citations: data.citations && data.citations.length > 0 ? data.citations : undefined,
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
+      // --- END: API Integration ---
+    } catch (error) {
+      console.error("Error fetching chat response:", error);
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content: `Sorry, I ran into an error: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
       setIsLoading(false);
-    }, 1500);
+    }
   };
 
   const suggestedQueries = [
@@ -122,15 +171,37 @@ export default function Chat() {
               </div>
               <div>
                 <h1 className="text-xl font-bold text-foreground">AI Recruitment Assistant</h1>
-                <p className="text-sm text-muted-foreground">
-                  Powered by RAG & Natural Language Search
-                </p>
+                <p className="text-sm text-muted-foreground">Powered by RAG & Natural Language Search</p>
               </div>
             </div>
-            <Button variant="ghost" onClick={() => navigate(-1)} className="gap-2 text-sm">
-              <ArrowLeft className="h-4 w-4" />
-              Back
-            </Button>
+
+            <div className="flex items-center gap-3">
+              {/* Batch selector in the header */}
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-muted-foreground mr-1">Batch:</label>
+                <select
+                  value={currentBatchTag ?? ""}
+                  onChange={(e) => setCurrentBatchTag(e.target.value)}
+                  className="rounded-md border bg-background px-2 py-1 text-sm"
+                  disabled={batchesLoading}
+                >
+                  {batches.length === 0 && <option value="">No batches</option>}
+                  {batches.map((b) => (
+                    <option key={b} value={b}>
+                      {b}
+                    </option>
+                  ))}
+                </select>
+                <Button variant="ghost" onClick={fetchBatches} className="ml-2" disabled={batchesLoading}>
+                  {batchesLoading ? "..." : "Refresh"}
+                </Button>
+              </div>
+
+              <Button variant="ghost" onClick={() => navigate(-1)} className="gap-2 text-sm">
+                <ArrowLeft className="h-4 w-4" />
+                Back
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -144,23 +215,15 @@ export default function Chat() {
               >
                 <div
                   className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full ${
-                    message.role === "user"
-                      ? "bg-primary"
-                      : "bg-gradient-to-br from-secondary to-primary"
+                    message.role === "user" ? "bg-primary" : "bg-gradient-to-br from-secondary to-primary"
                   }`}
                 >
-                  {message.role === "user" ? (
-                    <User className="h-4 w-4 text-white" />
-                  ) : (
-                    <Bot className="h-4 w-4 text-white" />
-                  )}
+                  {message.role === "user" ? <User className="h-4 w-4 text-white" /> : <Bot className="h-4 w-4 text-white" />}
                 </div>
                 <div className="flex-1 space-y-2">
                   <Card
                     className={`p-4 ${
-                      message.role === "user"
-                        ? "bg-primary text-primary-foreground ml-12"
-                        : "bg-card mr-12"
+                      message.role === "user" ? "bg-primary text-primary-foreground ml-12" : "bg-card mr-12"
                     }`}
                   >
                     <p className="text-sm">{message.content}</p>
@@ -169,15 +232,11 @@ export default function Chat() {
                   {/* Citations */}
                   {message.citations && message.citations.length > 0 && (
                     <div className="mr-12 space-y-2">
-                      <p className="text-xs font-medium text-muted-foreground">
-                        Referenced candidates:
-                      </p>
+                      <p className="text-xs font-medium text-muted-foreground">Referenced candidates:</p>
                       {message.citations.map((citation, idx) => (
                         <Card key={idx} className="border-primary/20 p-3">
                           <div className="mb-2 flex items-start justify-between gap-2">
-                            <p className="text-sm font-medium text-foreground">
-                              {citation.candidateName}
-                            </p>
+                            <p className="text-sm font-medium text-foreground">{citation.candidateName}</p>
                             <Button variant="ghost" size="sm" asChild>
                               <Link to={`/candidate/${citation.candidateId}`}>
                                 <ExternalLink className="h-3 w-3" />
@@ -201,7 +260,7 @@ export default function Chat() {
                 <Card className="mr-12 p-4">
                   <div className="flex items-center gap-2">
                     <Sparkles className="h-4 w-4 animate-pulse text-primary" />
-                    <span className="text-sm text-muted-foreground">Thinking...</span>
+                    <span className="text-sm text-muted-foreground">Searching candidates...</span>
                   </div>
                 </Card>
               </div>
@@ -242,6 +301,9 @@ export default function Chat() {
                 <Send className="h-4 w-4" />
               </Button>
             </div>
+            <p className="mt-2 text-center text-xs text-muted-foreground">
+              Searching in batch: <span className="font-medium text-foreground">{currentBatchTag ?? "(none)"}</span>
+            </p>
           </div>
         </div>
       </div>
@@ -263,20 +325,7 @@ export default function Chat() {
 
           <Card className="border-secondary/20 bg-secondary/5 p-4">
             <h3 className="mb-2 text-sm font-medium text-foreground">Pro tip</h3>
-            <p className="text-xs text-muted-foreground">
-              Be specific about skills, experience level, and requirements for best results.
-            </p>
-          </Card>
-
-          <Card className="p-4">
-            <h3 className="mb-2 text-sm font-medium text-foreground">Current database</h3>
-            <div className="text-xs text-muted-foreground">
-              <p className="mb-1">
-                <strong className="text-foreground">{mockCandidates.length}</strong> candidates
-                indexed
-              </p>
-              <p>Last updated: Today</p>
-            </div>
+            <p className="text-xs text-muted-foreground">Be specific about skills, experience level, and requirements for best results.</p>
           </Card>
         </div>
       </aside>

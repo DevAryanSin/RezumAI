@@ -1,21 +1,20 @@
+# Use a lightweight Python base image
 FROM python:3.11-slim
 
+# Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements and install Python dependencies
-# Gunicorn MUST be in requirements.txt
+# Copy dependencies first for caching
 COPY requirements.txt .
+
+# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy your app code
 COPY . .
 
-# Cloud Run provides $PORT, Gunicorn will use it automatically.
-# We bind to 0.0.0.0 and tell Gunicorn to use uvicorn worker class.
-CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:$PORT", "api.main:app"]
+# Expose the port Cloud Run expects
+EXPOSE 8080
+
+# Start FastAPI
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8080"]

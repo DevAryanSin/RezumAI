@@ -9,5 +9,4 @@ google-cloud-firestore==2.16.0
 google-auth==2.35.0
 google-auth-oauthlib==1.2.1
 google-auth-httplib2==0.2.0
-gunicorn
 requests

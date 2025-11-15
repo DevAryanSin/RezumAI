@@ -1,0 +1,48 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - PROJECT_ID=rezumai-478204
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/api/rezumai-478204-6e5b23c83478.json
+      - LOCATION=us-central1
+      - MODEL_LOCATION=us-central1
+      - VERTEX_LOCATION=us-central1
+      - VERTEX_EMBED_MODEL=text-embedding-004
+      - VERTEX_GEN_MODEL=gemini-2.0-flash-001
+      - INDEX_ENDPOINT_ID=9074104537291161600
+      - INDEX_ID=9048727808922091520
+      - BUCKET_NAME=bucket-resume
+      - CANDIDATE_COLLECTION=candidates
+    volumes:
+      - ./backend:/app
+    networks:
+      - rezumai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "8081:8081"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    volumes:
+      - .:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - rezumai-network
+
+networks:
+  rezumai-network:
+    driver: bridge

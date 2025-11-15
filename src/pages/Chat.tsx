@@ -29,7 +29,7 @@ interface Message {
 }
 
 // Define the API endpoint
-const API_URL = "http://localhost:8000"; // Your FastAPI backend URL
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 export default function Chat() {
   const navigate = useNavigate();
@@ -59,16 +59,8 @@ export default function Chat() {
   const fetchBatches = async () => {
     setBatchesLoading(true);
     try {
-      const resp = await fetch(`${API_URL}/api/batches`);
-      if (!resp.ok) {
-        console.warn("Failed to fetch batches", resp.status);
-        setBatches([]);
-        return;
-      }
-      const json = await resp.json();
-
-      // Accept either { batches: string[] } or string[] directly
-      const list: string[] = Array.isArray(json) ? json : json.batches || [];
+      // For now, use hardcoded batches. You can replace with API call when endpoint is ready
+      const list: string[] = ["b1", "b2", "test_batch_1"];
       setBatches(list);
 
       // pick the first batch if nothing selected yet
@@ -113,7 +105,8 @@ export default function Chat() {
         },
         body: JSON.stringify({
           query: query,
-          batch_tag: currentBatchTag, // Send the selected batch_tag
+          batch_tag: currentBatchTag || "b1", // Send the selected batch_tag
+          recruiter_uuid: "rec-1" // Required by backend schema
         }),
       });
 

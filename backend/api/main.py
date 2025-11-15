@@ -38,13 +38,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # Import router that depends on env
-from firestore import router as firestore_router  # must come after env load
+from .firestore import router as firestore_router  # must come after env load
 
 # Import vertex_search (RAG / Matching Engine) AFTER env
-import vertex_search
+from . import vertex_search
+
+# New modular helpers for storage, PDF processing, embeddings, and chat
+from .storage import upload_bytes, build_resume_path, generate_signed_url
+from .pdf_utils import extract_text_from_pdf, chunk_text
+from .embeddings import embed_texts, upsert_chunks_firestore
+from .chat import answer_query
 
 # Search integration: returns candidate dicts / formatting helpers
-from chatbot_search_integration import search_candidates, format_candidate_for_chat
+from .chatbot_search_integration import search_candidates, format_candidate_for_chat
 
 # Try to import google cloud storage (for upload endpoint)
 try:
@@ -152,8 +158,16 @@ def _secure_filename(name: str) -> str:
     return name.replace("..", "").replace("/", "_")
 
 def _validate_extension_and_size(filename: str, size: int) -> Optional[str]:
+    # Normalize filename -> use basename and strip whitespace to avoid CRLF/space issues
+    try:
+        from pathlib import Path as _P
+        filename = _P(filename).name
+    except Exception:
+        filename = filename
+    filename = filename.strip()
     _, dot, ext = filename.rpartition(".")
-    ext = f".{ext.lower()}" if dot else ""
+    ext = ext.strip().lower()
+    ext = f".{ext}" if dot else ""
     if ext not in ALLOWED_EXTENSIONS:
         return f"File type not allowed. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
     if size > MAX_SIZE_BYTES:
@@ -179,7 +193,7 @@ def health_firestore():
     """
     try:
         # Call into firestore module's initializer to ensure client is up
-        from firestore import _init_firestore_client  # local import to avoid circular issues
+        from .firestore import _init_firestore_client  # local import to avoid circular issues
         db = _init_firestore_client()
         # cheap call
         collections = list(db.collections())
@@ -194,123 +208,12 @@ def health_firestore():
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_handler(request: ChatRequest):
     """
-    Chat flow:
-    1. Use vertex_search.find_neighbor_ids to get candidate datapoint ids (namespace-scoped by batch_tag/recruiter_uuid).
-    2. Call search_candidates(...) to fetch/format candidate documents (search integration).
-    3. Build context for the generative model from top candidates and call Gemini.
-    4. Return generated answer with citations.
+    Simplified chat flow: use embeddings + Firestore KNN + Gemini synthesis
+    via chat.answer_query(batch_id, query). Maintains existing request shape.
     """
     try:
-        # 1) Find neighbors (vector search)
-        try:
-            neighbor_ids = vertex_search.find_neighbor_ids(
-                query=request.query,
-                batch_tag=request.batch_tag,
-                top_k=15
-            )
-        except Exception as e:
-            logger.exception("Vector search error: %s", e)
-            neighbor_ids = []
-
-        if not neighbor_ids:
-            logger.info("No neighbors returned by vector search for batch=%s recruiter=%s", request.batch_tag, request.recruiter_uuid)
-            return ChatResponse(content="I couldn't find any candidates matching your criteria in that batch.", citations=[])
-
-        # 2) Use search integration to fetch candidate records
-        # The search_candidates integration is expected to accept neighbor_ids or fallback to query-based search.
-        # We'll try neighbor_ids first (most precise). If that fails, fallback to query-based call.
-        candidates = []
-        try:
-            # try the neighbor_ids-first signature (common)
-            candidates = search_candidates(neighbor_ids=neighbor_ids, recruiter_uuid=request.recruiter_uuid, batch_tag=request.batch_tag, top_k=10)
-        except TypeError:
-            # signature does not accept neighbor_ids -> fallback to query-based call
-            try:
-                candidates = search_candidates(query=request.query, recruiter_uuid=request.recruiter_uuid, batch_tag=request.batch_tag, top_k=10)
-            except Exception as e:
-                logger.exception("search_candidates fallback failed: %s", e)
-                candidates = []
-        except Exception as e:
-            logger.exception("search_candidates failed: %s", e)
-            candidates = []
-
-        if not candidates:
-            logger.info("No candidate documents retrieved after search integration.")
-            return ChatResponse(content="I found some potential matches, but none were relevant after review.", citations=[])
-
-        # 3) Prepare context and citations. Use format_candidate_for_chat if available to normalize display.
-        context_parts = []
-        citations = []
-        top_candidates = candidates[:10]  # limit to top-10 for prompt size
-
-        for i, c in enumerate(top_candidates):
-            try:
-                formatted = format_candidate_for_chat(c) if callable(format_candidate_for_chat) else c
-            except Exception:
-                # If formatting fails, fall back to raw candidate dict
-                logger.exception("format_candidate_for_chat failed for candidate: %s", c.get("candidate_id") if isinstance(c, dict) else None)
-                formatted = c
-
-            # Build a compact textual snippet for the context (fields tolerant)
-            name = formatted.get("name") or formatted.get("candidate_name") or formatted.get("candidateName") or formatted.get("candidate_id") or "Unknown"
-            summary = formatted.get("summary") or formatted.get("profile_summary") or formatted.get("summary_text") or ""
-
-            context_parts.append(
-                f"--- Candidate {i+1} ---\nName: {name}\nSummary: {summary}\n"
-            )
-
-            # Ensure we map candidate id -> citation candidateId
-            cand_id = formatted.get("candidate_id") or formatted.get("id") or formatted.get("candidateId") or None
-            citations.append(Citation(
-                candidateId=str(cand_id) if cand_id else f"cand_{i}",
-                candidateName=name,
-                snippet=(summary[:150] + "...") if summary else ""
-            ))
-
-        context = "\n\n".join(context_parts)
-
-        # 4) Build prompt
-        prompt = f"""You are an expert AI recruitment assistant. Your task is to answer the user's question based *only* on the candidate summaries provided in the 'Context'.
-
-CONTEXT:
-{context}
-
-USER'S QUESTION:
-{request.query}
-
-Based on the context, provide a helpful and concise answer. If the context does not contain the answer, say so.
-Do not mention "based on the context" in your final answer.
-"""
-
-        # 5) Generate with Gemini (support async and sync call shapes)
-        if not getattr(vertex_search, "gen_model", None):
-            logger.error("Generative model not initialized in vertex_search.")
-            raise HTTPException(status_code=500, detail="Generative model not initialized")
-
-        # Try async generator if available
-        try:
-            # many newer SDKs expose generate_content_async / generate_async / generate_content
-            if hasattr(vertex_search.gen_model, "generate_content_async"):
-                gemini_response = await vertex_search.gen_model.generate_content_async(prompt)
-                text = getattr(gemini_response, "text", str(gemini_response)).strip()
-            elif hasattr(vertex_search.gen_model, "generate_async"):
-                gemini_response = await vertex_search.gen_model.generate_async(prompt)
-                text = getattr(gemini_response, "text", str(gemini_response)).strip()
-            else:
-                # fallback to synchronous call (SDK may provide generate or generate_content)
-                try:
-                    gemini_response = vertex_search.gen_model.generate(prompt)
-                    text = getattr(gemini_response, "text", str(gemini_response)).strip()
-                except Exception:
-                    # last-resort REST-style call wrapper (if the object expects generate_content)
-                    gemini_response = vertex_search.gen_model.generate_content(prompt)
-                    text = getattr(gemini_response, "text", str(gemini_response)).strip()
-        except Exception as e:
-            logger.exception("Generative model call failed: %s", e)
-            raise HTTPException(status_code=500, detail=f"Generative model invocation failed: {e}")
-
-        return ChatResponse(content=text, citations=citations)
-
+        result = await answer_query(batch_id=request.batch_tag, query=request.query)
+        return ChatResponse(content=result.get("answer", ""), citations=[])
     except HTTPException:
         raise
     except Exception as e:
@@ -366,7 +269,8 @@ async def upload_resume(
     orig_name = original_filename or file.filename or "resume"
     safe_name = _secure_filename(orig_name)
     _, dot, ext = safe_name.rpartition(".")
-    ext = f".{ext.lower()}" if dot else ""
+    ext = ext.strip().lower()
+    ext = f".{ext}" if dot else ""
 
     size = 0
     try:
@@ -378,33 +282,32 @@ async def upload_resume(
 
     validation_err = _validate_extension_and_size(safe_name, size)
     if validation_err:
+        # Log helpful debug info to diagnose why extension check failed
+        try:
+            logger.info("Upload validation failed: %s", validation_err)
+            logger.info("  orig_name=%r", orig_name)
+            logger.info("  file.filename=%r", getattr(file, 'filename', None))
+            logger.info("  file.content_type=%r", getattr(file, 'content_type', None))
+            logger.info("  computed safe_name=%r", safe_name)
+            logger.info("  computed ext=%r", ext)
+        except Exception:
+            pass
+
         raise HTTPException(status_code=400, detail=validation_err)
 
     session_id = str(uuid.uuid4())
-    gcs_filename = f"{session_id}{ext}"
-    gcs_path = f"{recruiter_uuid}/{batch_name}/{gcs_filename}"
-    blob = bucket.blob(gcs_path)
+    # Use session id as candidate id if none supplied by upstream
+    candidate_id = session_id
+    batch_id = batch_name
+    gcs_path = build_resume_path(batch_id, candidate_id)
 
     try:
-        if blob.exists():
-            raise HTTPException(status_code=409, detail="A file with this name already exists in this batch.")
-
+        # Upload to GCS directly via helper
         file.file.seek(0)
-        blob.upload_from_file(file.file, content_type=file.content_type)
+        data = file.file.read()
+        upload_bytes(gcs_path, data, content_type=file.content_type or "application/pdf")
 
-        # Patch metadata (best-effort)
-        try:
-            blob.metadata = {
-                "recruiter_uuid": recruiter_uuid,
-                "batch_name": batch_name,
-                "original_filename": safe_name,
-                "session_id": session_id,
-            }
-            blob.patch()
-        except Exception:
-            logger.exception("Failed to patch blob metadata for %s", gcs_path)
-
-        # Write to Firestore using vertex_search.firestore_client if available
+        # Best-effort metadata record in Firestore (upload log)
         try:
             if getattr(vertex_search, "firestore_client", None):
                 doc_ref = vertex_search.firestore_client.collection("recruiter_uploads").document(session_id)
@@ -422,19 +325,24 @@ async def upload_resume(
         except Exception:
             logger.exception("Failed to write metadata to Firestore for session %s", session_id)
 
+        # Extract -> chunk -> embed -> upsert to resume_chunks
+        text = extract_text_from_pdf(data)
+        chunks = chunk_text(text)
+        if chunks:
+            vectors = embed_texts(chunks)
+            upsert_chunks_firestore(batch_id=batch_id, candidate_id=candidate_id, chunks=chunks, vectors=vectors)
+
+        signed_url = generate_signed_url(gcs_path)
         return JSONResponse(status_code=201, content={
             "session_id": session_id,
             "bucket": BUCKET_NAME,
             "gcs_path": gcs_path,
+            "signed_url": signed_url,
+            "chunks_indexed": len(chunks) if chunks else 0,
         })
 
     except HTTPException:
         raise
     except Exception as e:
         logger.exception("Upload failed for %s: %s", gcs_path, e)
-        # Best-effort cleanup
-        try:
-            bucket.blob(gcs_path).delete()
-        except Exception:
-            pass
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")

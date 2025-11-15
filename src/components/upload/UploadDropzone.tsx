@@ -76,7 +76,8 @@ export default function UploadDropzone({
         }
 
         const xhr = new XMLHttpRequest();
-        xhr.open("POST", "/upload_resume", true);
+        const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
+        xhr.open("POST", `${apiUrl}/upload_resume`, true);
 
         // progress
         xhr.upload.onprogress = (ev) => {

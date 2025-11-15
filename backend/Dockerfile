@@ -3,11 +3,12 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Copy dependencies
+# Copy dependencies first for caching
 COPY requirements.txt .
 
 # Install dependencies
-RUN pip install --no-cache-dir -r requirements.txt gunicorn
+# Make sure 'uvicorn' and 'gunicorn' are in your requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy your app code
 COPY . .
@@ -15,9 +16,6 @@ COPY . .
 # Expose the port (metadata only)
 EXPOSE 8080
 
-# Set a default for the number of workers
-ENV WEB_CONCURRENCY 2
-
-# Start Gunicorn using the "shell form"
-# This ensures $WEB_CONCURRENCY and $PORT are substituted
-CMD gunicorn -w $WEB_CONCURRENCY "api.main:app" --bind 0.0.0.0:$PORT
+# Start Gunicorn using the shell form to sub $PORT
+# -k uvicorn.workers.UvicornWorker is required for FastAPI
+CMD gunicorn -k uvicorn.workers.UvicornWorker "api.main:app" --bind 0.0.0.0:$PORT

@@ -5,7 +5,7 @@ Add this to your main.py or import as a separate module.
 """
 from typing import List, Dict, Optional
 from google.cloud import firestore
-import vertex_search
+from . import vertex_search
 
 
 def search_candidates(

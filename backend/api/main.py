@@ -195,10 +195,10 @@ def health_firestore():
 async def chat_handler(request: ChatRequest):
     """
     Chat flow:
-      1. Use vertex_search.find_neighbor_ids to get candidate datapoint ids (namespace-scoped by batch_tag/recruiter_uuid).
-      2. Call search_candidates(...) to fetch/format candidate documents (search integration).
-      3. Build context for the generative model from top candidates and call Gemini.
-      4. Return generated answer with citations.
+    1. Use vertex_search.find_neighbor_ids to get candidate datapoint ids (namespace-scoped by batch_tag/recruiter_uuid).
+    2. Call search_candidates(...) to fetch/format candidate documents (search integration).
+    3. Build context for the generative model from top candidates and call Gemini.
+    4. Return generated answer with citations.
     """
     try:
         # 1) Find neighbors (vector search)

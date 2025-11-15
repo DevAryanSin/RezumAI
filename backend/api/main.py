@@ -1,4 +1,3 @@
-# main.py
 """
 RezumAI - Main API
 
@@ -8,7 +7,7 @@ Key points:
 - Lifespan event initializes vertex_search (RAG clients).
 - Exposes /api/chat, upload endpoints, and simple health checks.
 """
-from pathlib import Path
+# pathlib.Path and dotenv are removed - not used in production.
 import os
 import logging
 import uuid
@@ -19,17 +18,25 @@ from contextlib import asynccontextmanager
 # -------------------------
 # Load environment (FIRST)
 # -------------------------
-try:
-    from dotenv import load_dotenv
-
-    env_path = Path(__file__).parent / ".env"
-    if env_path.exists():
-        print(f"Loading environment from: {env_path.resolve()}")
-        load_dotenv(env_path)
-    else:
-        print(".env file not found, relying on system environment.")
-except Exception as e:
-    print(f"Error loading .env file: {e}")
+#
+# !!! DEPLOYMENT NOTE !!!
+# We do NOT load a .env file in a production environment.
+# All configuration (PROJECT_ID, BUCKET_NAME, etc.)
+# must be set as environment variables in the deployment service
+# (e.g., Cloud Run, GKE, App Engine).
+#
+# try:
+#     from dotenv import load_dotenv
+#
+#     env_path = Path(__file__).parent / ".env"
+#     if env_path.exists():
+#         print(f"Loading environment from: {env_path.resolve()}")
+#         load_dotenv(env_path)
+#     else:
+#         print(".env file not found, relying on system environment.")
+# except Exception as e:
+#     print(f"Error loading .env file: {e}")
+#
 
 # Now imports that depend on env values
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -49,17 +56,16 @@ from chatbot_search_integration import search_candidates, format_candidate_for_c
 # Try to import google cloud storage (for upload endpoint)
 try:
     from google.cloud import storage
-    from google.oauth2 import service_account
+    # We do NOT import service_account. We will use Application Default Credentials.
 except Exception:
     storage = None
-    service_account = None
 
 # -------------------------
 # Configuration
 # -------------------------
 PROJECT_ID = os.getenv("PROJECT_ID")
 BUCKET_NAME = os.getenv("BUCKET_NAME")
-GOOGLE_CREDS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+# GOOGLE_CREDS is no longer needed, we use ADC
 ALLOWED_EXTENSIONS = {".pdf", ".docx"}
 MAX_SIZE_BYTES = int(os.getenv("MAX_SIZE_BYTES", 10 * 1024 * 1024))  # 10 MB default
 
@@ -71,32 +77,28 @@ logger = logging.getLogger("uvicorn.error")
 storage_client = None
 bucket = None
 
-def _resolve_creds_path(creds_path: Optional[str]) -> Optional[str]:
-    if not creds_path:
-        return None
-    return os.path.abspath(creds_path)
+# _resolve_creds_path function is removed - we don't use file paths.
 
 try:
     if storage is None:
         logger.warning("google-cloud-storage not installed; upload endpoints will be disabled.")
     else:
-        creds_path = _resolve_creds_path(GOOGLE_CREDS)
-        if creds_path:
-            if not os.path.exists(creds_path):
-                logger.error("GOOGLE_APPLICATION_CREDENTIALS file not found at: %s", creds_path)
-                raise FileNotFoundError(f"GOOGLE_APPLICATION_CREDENTIALS not found: {creds_path}")
-            creds = service_account.Credentials.from_service_account_file(creds_path) if service_account else None
-            storage_client = storage.Client(credentials=creds, project=PROJECT_ID) if creds else storage.Client(project=PROJECT_ID)
-        else:
-            # Use ADC / default credentials
-            storage_client = storage.Client(project=PROJECT_ID)
+        # In a deployment, we rely on Application Default Credentials (ADC).
+        # The service account is attached to the runtime environment (e.g., Cloud Run).
+        # We only need the PROJECT_ID.
+        if not PROJECT_ID:
+            logger.critical("PROJECT_ID environment variable is not set. GCS client cannot be initialized.")
+            raise ValueError("PROJECT_ID not set")
+
+        # This call will automatically use the attached service account (ADC)
+        storage_client = storage.Client(project=PROJECT_ID)
 
         if BUCKET_NAME:
             bucket = storage_client.bucket(BUCKET_NAME)
         else:
             logger.warning("BUCKET_NAME not set. /upload_resume will fail until configured.")
 except Exception as e:
-    logger.exception("Failed to initialize GCS client: %s", e)
+    logger.exception("Failed to initialize GCS client (using ADC): %s", e)
     storage_client = None
     bucket = None
 
@@ -107,6 +109,7 @@ except Exception as e:
 async def lifespan(app: FastAPI):
     logger.info("FastAPI app starting up...")
     try:
+        # This function must ALSO rely on ADC and not file-based auth
         vertex_search.initialize_globals()
         logger.info("Vertex/RAG clients initialized.")
     except Exception as e:
@@ -116,7 +119,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="RezumAI - RAG API", lifespan=lifespan)
 
-# CORS (dev-friendly)
+# !!! SECURITY NOTE !!!
+# allow_origins=["*"] is insecure for production.
+# You MUST restrict this to your frontend's domain.
+# e.g., allow_origins=["https://your-frontend.com"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -179,6 +185,7 @@ def health_firestore():
     """
     try:
         # Call into firestore module's initializer to ensure client is up
+        # This module must ALSO use ADC (no file-based auth)
         from firestore import _init_firestore_client  # local import to avoid circular issues
         db = _init_firestore_client()
         # cheap call
@@ -359,7 +366,7 @@ async def upload_resume(
             status_code=500,
             detail=(
                 "Storage not configured. Ensure google-cloud-storage is installed, BUCKET_NAME is set, "
-                "and GOOGLE_APPLICATION_CREDENTIALS points to a valid service-account JSON if required."
+                "and the runtime service account has 'Storage Object Creator' permissions."
             ),
         )
 

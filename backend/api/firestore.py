@@ -5,8 +5,7 @@ This router is read-only and performs server-side mapping so your existing
 Firestore documents (created by your Cloud Function) are returned in the
 shape expected by the frontend `CandidateCard` and `CandidateList`.
 
-It tolerates missing credentials at import time (lazy init). If Firestore is
-not available the endpoints return HTTP 500 with a clear message.
+It relies on Application Default Credentials (ADC) for production deployment.
 
 Mapping rules (heuristic):
 - `candidate_id`, `recruiter_uuid`, `batch_tag`, `resume_gcs_url` are preserved.
@@ -33,14 +32,14 @@ logger = logging.getLogger(__name__)
 # --- Configuration ---
 CANDIDATE_COLLECTION = os.getenv("CANDIDATE_COLLECTION", "candidates")
 DEFAULT_PAGE_SIZE = int(os.getenv("DEFAULT_PAGE_SIZE", 20))
-GOOGLE_CREDS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+# GOOGLE_CREDS file path is removed. We use ADC.
 
 # Firestore lazy client objects
 _db = None
 _firestore_module = None
 _firestore_error_msg = (
-    "Firestore client not available. Ensure google-cloud-firestore is installed and "
-    "GOOGLE_APPLICATION_CREDENTIALS is set to a service-account JSON path, or Application Default Credentials are available."
+    "Firestore client not available. Ensure 'google-cloud-firestore' is installed and "
+    "the runtime service account has 'Cloud Datastore User' (Firestore) permissions."
 )
 
 # --- Pydantic models (frontend shape) ---
@@ -75,21 +74,18 @@ def _init_firestore_client():
         return _db
 
     try:
-        import google.auth
-        from google.oauth2 import service_account
+        # We only need the firestore client, not google.auth or service_account
         from google.cloud import firestore as _firestore
 
         _firestore_module = _firestore
 
-        if GOOGLE_CREDS and os.path.isfile(GOOGLE_CREDS):
-            creds = service_account.Credentials.from_service_account_file(GOOGLE_CREDS)
-            _db = _firestore.Client(credentials=creds)
-        else:
-            _db = _firestore.Client()
+        # In a deployment (Cloud Run, GKE, etc.), this call automatically
+        # uses the attached service account via Application Default Credentials (ADC).
+        _db = _firestore.Client()
 
         return _db
     except Exception as e:
-        logger.exception("Failed to initialize Firestore client: %s", e)
+        logger.exception("Failed to initialize Firestore client (using ADC): %s", e)
         raise HTTPException(status_code=500, detail=_firestore_error_msg + f" Details: {e}")
 
 

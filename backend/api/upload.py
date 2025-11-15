@@ -14,8 +14,8 @@ Behaviour:
 - Writes a metadata document to Firestore collection `recruiter_uploads` keyed by session_id.
 
 Environment variables:
-- GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json (or rely on default credentials)
 - BUCKET_NAME=your-gcs-bucket-name
+- (Authentication is handled by the runtime's attached service account - ADC)
 
 IAM roles required for the service account used:
 - storage.objects.create
@@ -31,23 +31,30 @@ from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from google.cloud import storage, firestore
-from google.oauth2 import service_account
+# from google.oauth2 import service_account (No longer needed)
 
 # Configuration from env
 BUCKET_NAME = os.getenv("BUCKET_NAME")
-GOOGLE_CREDS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 
 # Initialize GCP clients
-if GOOGLE_CREDS:
-    creds = service_account.Credentials.from_service_account_file(GOOGLE_CREDS)
-    storage_client = storage.Client(credentials=creds)
-    firestore_client = firestore.Client(credentials=creds)
-else:
+# In production, these clients will automatically use the
+# Application Default Credentials (ADC) from the runtime service account.
+try:
     storage_client = storage.Client()
     firestore_client = firestore.Client()
+except Exception as e:
+    print(f"FATAL: Could not initialize GCP clients using ADC: {e}")
+    # Depending on env, you might want to exit, but FastAPI startup will
+    # likely fail at the next step anyway if BUCKET_NAME is missing or clients failed.
+    # For simplicity, we let it proceed to the bucket check.
+    storage_client = None # Ensure it's None if init failed
+    firestore_client = None
 
 if not BUCKET_NAME:
     raise RuntimeError("Environment variable BUCKET_NAME is required")
+
+if storage_client is None:
+     raise RuntimeError("Storage client failed to initialize (see logs).")
 
 bucket = storage_client.bucket(BUCKET_NAME)
 app = FastAPI(title="RezumAI Resume Upload API v2")
@@ -82,19 +89,25 @@ async def upload_resume(
     ext = f".{ext}" if dot else ""
 
     # GCS path per recruiter UUID and batch name
-    gcs_path = f"{recruiter_uuid}/{batch_name}/{safe_name}"
+    # NOTE: The original code used safe_name, which could still be non-unique.
+    # Using session_id as the filename is safer to prevent overwrites.
+    # We'll stick to the original logic, but this is a potential issue.
+    # gcs_filename = f"{session_id}{ext}"
+    gcs_filename = safe_name # Sticking to original logic
+    gcs_path = f"{recruiter_uuid}/{batch_name}/{gcs_filename}"
 
     try:
         blob = bucket.blob(gcs_path)
         # prevent duplicate uploads
         if blob.exists():
             raise HTTPException(status_code=409, detail="A file with this name already exists in this batch.")
+        
         file.file.seek(0)
         blob.upload_from_file(file.file, content_type=file.content_type)
 
         # Set metadata on the GCS object
         blob.metadata = {
-            
+            "session_id": session_id, # Added session_id here
             "recruiter_uuid": recruiter_uuid,
             "batch_name": batch_name,
             "original_filename": safe_name,

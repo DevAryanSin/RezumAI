@@ -13,7 +13,8 @@ from vertexai.generative_models import GenerativeModel
 import google.cloud.aiplatform as aiplatform
 from google.auth import default
 from google.auth.transport.requests import Request as AuthRequest
-from google.oauth2 import service_account
+# 'service_account' import removed as it was unused and ADC is handled by 'default()'
+# from google.oauth2 import service_account
 
 # -------------------------------------------------------------------
 # ENV
@@ -68,9 +69,10 @@ def initialize_globals() -> None:
     print("[Init] ✓ Generative model loaded: gemini-2.0-flash-001")
 
     # Get credentials for REST API fallback
+    # This correctly uses Application Default Credentials (ADC)
     try:
         _credentials, _ = default(scopes=['https://www.googleapis.com/auth/cloud-platform'])
-        print("[Init] ✓ Loaded default credentials")
+        print("[Init] ✓ Loaded default credentials (ADC)")
     except Exception as e:
         print(f"[Init] Warning: Could not load default credentials: {e}")
         _credentials = None
@@ -227,6 +229,8 @@ def find_neighbor_ids(
             deployed_index_id=DEPLOYMENT_ID,
             queries=[embedding],
             num_neighbors=top_k
+            # Note: find_neighbors() in SDK may not support 'filter' argument
+            # This is a known SDK limitation.
         )
         
         print(f"[Search] ✓ Method 1 succeeded")
@@ -408,7 +412,7 @@ def _rest_api_search(
 ) -> Dict:
     """
     Fallback method: Use REST API directly.
-    Uses online match endpoint for public endpoints.
+    Uses online findNeighbors endpoint.
     """
     if _credentials is None:
         raise RuntimeError("No credentials available for REST API")
@@ -417,21 +421,23 @@ def _rest_api_search(
     if not _credentials.valid:
         _credentials.refresh(AuthRequest())
     
-    # Build URL - using the online match endpoint
-    url = f"https://{LOCATION}-aiplatform.googleapis.com/v1/{INDEX_ENDPOINT_FULL_NAME}:readIndexDatapoints"
+    # *** FIX: Use :findNeighbors endpoint, not :readIndexDatapoints ***
+    url = f"https://{LOCATION}-aiplatform.googleapis.com/v1/{INDEX_ENDPOINT_FULL_NAME}:findNeighbors"
     
     headers = {
         "Authorization": f"Bearer {_credentials.token}",
         "Content-Type": "application/json"
     }
     
-    # Build query
+    # *** FIX: Build query payload to match :findNeighbors spec ***
     query_payload = {
-        "featureVector": embedding,
+        "datapoint": {
+            "featureVector": embedding
+        },
         "neighborCount": top_k
     }
     
-    # Add restricts if provided
+    # Add restricts (filters) if provided
     if batch_tag or recruiter_uuid:
         restricts = []
         if batch_tag:
@@ -444,7 +450,9 @@ def _rest_api_search(
                 "namespace": "recruiter_uuid",
                 "allowList": [recruiter_uuid]
             })
-        query_payload["restricts"] = restricts
+        
+        # *** FIX: Add restricts to the 'datapoint' object ***
+        query_payload["datapoint"]["restricts"] = restricts
     
     body = {
         "deployedIndexId": DEPLOYMENT_ID,

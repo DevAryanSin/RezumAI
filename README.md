@@ -1,73 +1,180 @@
-# Welcome to your Lovable project
+# RezumAI - AI-Powered Resume Management System
 
-## Project info
+An intelligent resume management platform that leverages Google Vertex AI for semantic search, document analysis, and AI-powered chat interactions with resume data.
 
-**URL**: https://lovable.dev/projects/7e06eff3-6b79-4369-baff-5312b9ccd4df
+## 🚀 Quick Start with Docker
 
-## How can I edit this code?
+Run the entire application with a single command:
 
-There are several ways of editing your application.
-
-**Use Lovable**
-
-Simply visit the [Lovable Project](https://lovable.dev/projects/7e06eff3-6b79-4369-baff-5312b9ccd4df) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
+```bash
+docker-compose up --build
 ```
 
-**Edit a file directly in GitHub**
+This will start:
+- **Backend API** (FastAPI) at `http://localhost:8000`
+- **Frontend** (React) at `http://localhost:8081`
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+### Access the Application
 
-**Use GitHub Codespaces**
+Once running, open your browser to:
+- **Main Application**: http://localhost:8081
+- **Upload Resumes**: http://localhost:8081/upload
+- **AI Chat Assistant**: http://localhost:8081/chat
+- **API Documentation**: http://localhost:8000/docs
+- **API Health Check**: http://localhost:8000/healthz
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+## 🛑 Managing Docker Containers
 
-## What technologies are used for this project?
+### Stop the Application
+```bash
+docker-compose down
+```
 
-This project is built with:
+### View Logs
+```bash
+# All services
+docker-compose logs -f
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+# Backend only
+docker-compose logs -f backend
 
-## How can I deploy this project?
+# Frontend only
+docker-compose logs -f frontend
+```
 
-Simply open [Lovable](https://lovable.dev/projects/7e06eff3-6b79-4369-baff-5312b9ccd4df) and click on Share -> Publish.
+### Rebuild from Scratch
+```bash
+docker-compose down -v
+docker-compose up --build
+```
 
-## Can I connect a custom domain to my Lovable project?
+## 🏗️ Architecture
 
-Yes, you can!
+```
+┌─────────────────┐
+│   Frontend      │
+│  (React/Vite)   │
+│  Port: 8081     │
+└────────┬────────┘
+         │
+         │ HTTP API
+         ↓
+┌─────────────────┐
+│   Backend       │
+│   (FastAPI)     │
+│   Port: 8000    │
+└────────┬────────┘
+         │
+         ├─→ Google Cloud Storage (PDF storage)
+         ├─→ Firestore (Vector embeddings)
+         └─→ Vertex AI (Gemini + Embeddings)
+```
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+## 🛠️ Technology Stack
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+### Frontend
+- React with TypeScript
+- Vite for build tooling
+- Tailwind CSS & shadcn-ui for styling
+- React Router for navigation
+- React Query for state management
+
+### Backend
+- FastAPI (Python 3.11)
+- Google Cloud AI Platform
+  - Vertex AI Gemini (gemini-2.0-flash-001)
+  - Text Embeddings (text-embedding-004)
+- Google Cloud Storage
+- Firestore for vector storage
+- Uvicorn ASGI server
+
+## 📋 Requirements
+
+- Docker Desktop installed and running
+- Docker Compose v3.8+
+- At least 4GB RAM allocated to Docker
+- Google Cloud Platform account with:
+  - Service account JSON key
+  - Vertex AI API enabled
+  - Cloud Storage bucket created
+  - Firestore database created
+
+## ⚙️ Configuration
+
+All environment variables are configured in `docker-compose.yml`. Key configurations:
+
+- `PROJECT_ID`: Your GCP project ID
+- `GOOGLE_APPLICATION_CREDENTIALS`: Path to service account JSON
+- `BUCKET_NAME`: GCS bucket for resume storage
+- `VERTEX_EMBED_MODEL`: text-embedding-004
+- `VERTEX_GEN_MODEL`: gemini-2.0-flash-001
+
+## 🔧 Development
+
+The Docker setup includes hot-reload for both services:
+- **Backend**: Auto-reloads on code changes via Uvicorn
+- **Frontend**: Auto-reloads on code changes via Vite HMR
+
+## 📊 Features
+
+- **Resume Upload**: Drag-and-drop PDF resume upload
+- **Automatic Processing**: Text extraction and chunking
+- **Vector Embeddings**: Semantic search using Vertex AI embeddings
+- **AI Chat**: Query resumes using natural language
+- **Batch Management**: Organize resumes by recruitment batches
+- **Cloud Storage**: Secure storage with Google Cloud Storage
+
+## 🐛 Troubleshooting
+
+### Port Already in Use
+```bash
+# Find and kill processes on ports 8000 or 8081
+lsof -ti:8000 | xargs kill -9
+lsof -ti:8081 | xargs kill -9
+```
+
+### Build Errors
+```bash
+docker-compose down -v
+docker system prune -f
+docker-compose up --build
+```
+
+### Backend Authentication Issues
+- Verify service account JSON path in `docker-compose.yml`
+- Ensure service account has required permissions:
+  - Vertex AI User
+  - Storage Object Admin
+  - Cloud Datastore User
+
+### Frontend Can't Reach Backend
+- Ensure backend container is healthy: `docker-compose ps`
+- Check backend logs: `docker-compose logs backend`
+- Verify CORS settings in backend
+
+## 📝 API Endpoints
+
+- `POST /upload_resume`: Upload and process resume
+- `POST /api/chat`: Query resumes using AI
+- `GET /healthz`: Health check endpoint
+- `GET /docs`: Interactive API documentation
+
+## 🤝 Contributing
+
+1. Clone the repository
+2. Create a feature branch
+3. Make your changes
+4. Test with Docker: `docker-compose up --build`
+5. Submit a pull request
+
+## 📄 License
+
+[Add your license here]
+
+## 👥 Authors
+
+Team Finetuners(
+    Puru Thakur,
+    Devank Srivastava,
+    Aryan Prasad Singh
+)

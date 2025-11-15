@@ -1,26 +1,22 @@
 FROM python:3.11-slim
 
-# Set working directory
 WORKDIR /app
 
-# Copy dependencies first for caching
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
 COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install dependencies, adding gunicorn for the server
-RUN pip install --no-cache-dir -r requirements.txt gunicorn
-
-# Copy your app code
+# Copy application code
 COPY . .
 
-# Expose the port Cloud Run expects
-EXPOSE 8080
+# Expose port
+EXPOSE 8000
 
-# Set a sensible default for the number of workers
-# You can override this at runtime, e.g., in Cloud Run
-ENV WEB_CONCURRENCY 2
-
-# Start Gunicorn, which will manage Uvicorn workers
-# -w: number of worker processes
-# -k: the worker class to use (Uvicorn)
-# --bind: the address and port to bind to
-CMD ["gunicorn", "-w", "$WEB_CONCURRENCY", "-k", "uvicorn.workers.UvicornWorker", "api.main:app", "--bind", "0.0.0.0:8080"]
+# Run with uvicorn for development
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
